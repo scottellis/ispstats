@@ -138,12 +138,25 @@ static void dump_hist_stats_one_component(unsigned int *d, int nbins,
 					const char *component)
 {
 	int i, j;
+	unsigned int half, median_bin;
 	unsigned int sum = 0;
 
 	for (i = 0; i < nbins; i++)
 		sum += d[i];
 
-	printf("\nComponent: %s  sum %u", component, sum);
+	half = 0;
+
+	for (i = 0; i < nbins; i++) {
+		half += d[i];
+	
+		if (half > sum / 2)
+			break;	
+	}
+
+	median_bin = i;
+
+	printf("\nComponent: %s  sum %u  median-bin %u", component, sum,
+		median_bin);
 
 	for (i = 0; i < nbins; i += 8) {
 		printf("\n%3d: ", i % nbins);
@@ -169,6 +182,7 @@ static void dump_hist_stats(unsigned int *d, int nbins)
 static int read_histogram(int fd, int nbins, int nframes, unsigned char gain)
 {	
 	struct isp_hist_data hist;
+	int result, i;
 
 	if (enable_histogram(fd, nbins, nframes, gain) < 0)
 		return -1;
@@ -182,10 +196,19 @@ static int read_histogram(int fd, int nbins, int nframes, unsigned char gain)
 
 	memset(hist.hist_statistics_buf, 0, 4096);
 
-	/* just a WAG */
-	msleep(1000 * nframes);
+	for (i = 0; i < 5; i++) {
+		/* just a WAG */
+		msleep(1000 * nframes);
 
-	if (-1 == xioctl(fd, VIDIOC_PRIVATE_ISP_HIST_REQ, &hist))
+		result = ioctl(fd, VIDIOC_PRIVATE_ISP_HIST_REQ, &hist);
+
+		if (result == -EBUSY)
+			printf("EBUSY querying isp hist stats : %d\n", i);
+		else 
+			break;
+	}
+
+	if (result)
 		perror("VIDIOC_PRIVATE_ISP_HIST_REQ");
 	else
 		dump_hist_stats(hist.hist_statistics_buf, nbins);
