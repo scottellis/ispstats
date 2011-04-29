@@ -4,8 +4,8 @@
 For experimenting with the OMAP3 isp histogram functionality via the v4l2 
 interface. Testing with a driver for an Aptina mt9p031 sensor.
 
-Run with no arguments, the default is to do one read of the histogram for
-a 100x100 region in the center of a 2560x1920 raw bayer input and dump the 
+Run with no arguments, the default is to do 4 image reads to get a histogram 
+for a 400x400 region in the center of a 2560x1920 bayer input and dump the 
 results. 
 
 You can specify the number of histogram bins (32,64,128 or 256), the number
@@ -20,5 +20,12 @@ right into this project.
 
 The newer kernel omap isp code has this header moved to include/linux/omap3isp 
 for more convenient user land access.
+
+
+There is a little shell script to run the program in a loop. 
+
+ispstats assumes you have another application already streaming the camera,
+it does not start or stop streaming on its own.
+
 
 
