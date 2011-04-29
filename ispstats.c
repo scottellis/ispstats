@@ -14,6 +14,10 @@
 
 #include "isp_user.h"
 
+int nbins = 256;
+int nframes = 4;
+int show_bins = 0;
+unsigned long gain = 0x20;
 
 static int msleep(int milliseconds)
 {
@@ -40,7 +44,7 @@ static int xioctl(int fd, int request, void *arg)
 	return r;
 }
 
-static int enable_histogram(int fd, int nbins, int nframes, unsigned char gain)
+static int enable_histogram(int fd)
 {
 	struct isp_hist_config cfg;
 	unsigned int x_start, x_end;
@@ -96,10 +100,11 @@ static int enable_histogram(int fd, int nbins, int nframes, unsigned char gain)
 	cfg.num_regions = 0;
 
 	/* packed start [29:16] and end [13:0] pixel positions */ 
-	x_start = 1230;
-	x_end = 1329;
-	y_start = 910;
-	y_end = 1009;
+	/* choose a 400x400 pixel region in the center for stats */
+	x_start = 1080;
+	x_end = 1479;
+	y_start = 760;
+	y_end = 1159;
 	cfg.reg0_hor = (x_start << 16) | x_end;
 	cfg.reg0_ver = (y_start << 16) | y_end;
 
@@ -134,8 +139,7 @@ static int enable_histogram(int fd, int nbins, int nframes, unsigned char gain)
 	return 0;
 }
 
-static void dump_hist_stats_one_component(unsigned int *d, int nbins, 
-					const char *component)
+static void dump_hist_stats_one_component(int index, unsigned int *d, int nbins)
 {
 	int i, j;
 	unsigned int half, median_bin;
@@ -155,36 +159,78 @@ static void dump_hist_stats_one_component(unsigned int *d, int nbins,
 
 	median_bin = i;
 
-	printf("\nComponent: %s  sum %u  median-bin %u", component, sum,
-		median_bin);
+	printf("Component[%d]: median-bin %u\n", index, median_bin);
 
-	for (i = 0; i < nbins; i += 8) {
-		printf("\n%3d: ", i % nbins);
+	if (show_bins) {
+		for (i = 0; i < nbins; i += 8) {
+			printf("\n%3d: ", i % nbins);
 
-		for (j = 0; j < 8; j++)
-			printf("%8u", d[i+j]);
+			for (j = 0; j < 8; j++)
+				printf("%8u", d[i+j]);
+		}
+	
+		printf("\n");
+	}
+}	
+
+static void dump_hist_summary(unsigned int *d, int nbins)
+{
+	int i, j;
+	unsigned int half;
+	unsigned int median_bin[4];
+	unsigned int sum;
+	unsigned int *p;
+	double avg;
+
+	avg = 0.0;
+	for (j = 0; j < 4; j++) {
+		p = &d[j * nbins];
+
+		sum = 0;
+		half = 0;
+
+		for (i = 0; i < nbins; i++) {
+			sum += p[i];
+		}
+
+		for (i = 0; i < nbins; i++) {
+			half += p[i];
+		
+			if (half > sum / 2)
+				break;	
+		}
+
+		median_bin[j] = i;
+		avg += i;
 	}
 
-	printf("\n");
-}	
+	avg /= 4.0;
+
+	printf("median-bins: %3u  %3u  %3u  %3u    avg: %3.2lf", median_bin[0],
+		median_bin[1], median_bin[2], median_bin[3], avg);
+}
 
 static void dump_hist_stats(unsigned int *d, int nbins)
 {
 	int i;
-	char component[4][16] = { "R", "Gr", "Gb", "B" };
-
-	for (i = 0; i < 4; i++)
-		dump_hist_stats_one_component(&d[i * nbins], nbins, component[i]);
+	
+	if (show_bins) {
+		for (i = 0; i < 4; i++)
+			dump_hist_stats_one_component(i, &d[i * nbins], nbins);
+	}
+	else {
+		dump_hist_summary(d, nbins);
+	}
 
 	printf("\n");
 }
 
-static int read_histogram(int fd, int nbins, int nframes, unsigned char gain)
+static int read_histogram(int fd)
 {	
 	struct isp_hist_data hist;
 	int result, i;
 
-	if (enable_histogram(fd, nbins, nframes, gain) < 0)
+	if (enable_histogram(fd) < 0)
 		return -1;
 
 	hist.hist_statistics_buf = malloc(4096);
@@ -196,17 +242,30 @@ static int read_histogram(int fd, int nbins, int nframes, unsigned char gain)
 
 	memset(hist.hist_statistics_buf, 0, 4096);
 
-	for (i = 0; i < 5; i++) {
-		/* just a WAG */
-		msleep(1000 * nframes);
+	/* just a WAG, the initial sleep after enabling */
+	msleep(500 * nframes);
 
+	for (i = 0; i < 10; i++) {
 		result = ioctl(fd, VIDIOC_PRIVATE_ISP_HIST_REQ, &hist);
 
-		if (result == -EBUSY)
-			printf("EBUSY querying isp hist stats : %d\n", i);
-		else 
+		if (!result)
 			break;
+
+		if (errno != EBUSY)
+			break;
+		
+		if (i > 2) {
+			if (i == 3)
+				printf("EBUSY ...");
+			else
+				printf(".");
+		}
+
+		msleep(500);
 	}
+
+	if (i > 0)
+		printf("\n");
 
 	if (result)
 		perror("VIDIOC_PRIVATE_ISP_HIST_REQ");
@@ -250,10 +309,11 @@ static void usage(FILE *fp, char **argv)
 	fprintf (fp,
 		"Usage: %s [options]\n\n"
 		"Options:\n"
-		"-b<n>	num histogram bins n=32,64,128 or 256 (default = 32)\n"
-		"-f<n>	num frames to collect (default = 1)\n"
+		"-b<n>  num histogram bins n=32,64,128 or 256 (default = 128)\n"
+		"-f<n>  num frames to collect (default = 1)\n"
 		"-g<n>  gain in fixed-point 3Q5 format, (default 0x20 = gain of 1.0)\n"
-		"-h 	print this message\n"
+		"-s     show bin data\n"
+		"-h     print this message\n"
 		"\n",
 		argv[0]);
 }
@@ -262,12 +322,9 @@ int main(int argc, char **argv)
 {
 	int fd, opt;
 	char *endp;
-	int nbins = 32;
-	int nframes = 1;
-	unsigned long gain = 0x20;
 	char dev_name[] = "/dev/video0";
 
-	while ((opt = getopt(argc, argv, "b:f:g:h")) != -1) {
+	while ((opt = getopt(argc, argv, "b:f:g:sh")) != -1) {
 		switch (opt) {
 		case 'b':
 			nbins = atoi(optarg);				
@@ -289,6 +346,10 @@ int main(int argc, char **argv)
 
 			break;
 
+		case 's':
+			show_bins = 1;
+			break;
+
 		case 'h':
 			usage(stdout, argv);
 			exit(0);
@@ -301,7 +362,7 @@ int main(int argc, char **argv)
 
 	fd = open_device(dev_name);
 
-	read_histogram(fd, nbins, nframes, 0xff & gain);
+	read_histogram(fd);
 
 	close(fd);
 
